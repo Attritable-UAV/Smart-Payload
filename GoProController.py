@@ -2,6 +2,7 @@ from pymavlink import mavutil
 #from time import sleep
 from goprocam import GoProCamera, constants
 import subprocess
+from Wifi import Wifi
 
 KEY_FILE = "/home/PayloadController/Smart-Payload/key.priv"
 SERIAL_DEV = "/dev/serial0"
@@ -10,19 +11,29 @@ ENCRYPTED_PARTITION='/dev/mmcblk0p3'
 LUKS_MOUNT_NAME='encryptfs'
 LUKS_MOUNT_POINT='/home/PayloadController/encryptfs'
 
-
+GOPRO_SSID = "Nicks Hero 7"
+GOPRO_PASS = "hike7424"
+WIFI_INT = "wlan0"
 
 def main():
     
     try:
+        wifi = Wifi(server_name=GOPRO_SSID,
+                password=GOPRO_PASS,
+                interface=WIFI_INT)
+        wifi.run()
+    except:
+        raise
+
+    try:
         key = RetrieveKey()
     except Exception as e:
-        raise(e, "Failed to read KEY_FILE from filesystem")
+        raise
 
     try:
         cam = GoProCamera.GoPro()
     except Exception as e:
-        raise(e, "Failed to connect to camera. Is the controller on the correct WiFi network?")
+        raise
     
 
     fc = mavutil.mavlink_connection(SERIAL_DEV, baud=SERIAL_BAUD_RATE)
@@ -35,7 +46,6 @@ def main():
                                                 mavutil.mavlink.MAV_AUTOPILOT_INVALID, 0, 0, 0)
 
 
-
     recordFlag = True
     while(True):
 
@@ -43,12 +53,15 @@ def main():
 
         if (msg.servo8_raw >= 1660):
                 if (recordFlag):
-                    print("Taking Photo")
-                    TakePhoto(cam, key, "test")
+                    print("Starting Video")
+                    StartVideo(cam)
                     
                 recordFlag = False
         else:
-            recordFlag = True
+            if (recordFlag == False):
+                print("Stopping Video")
+                StopVideo(cam, key, "test")
+                recordFlag = True
 
         #print(msg.servo8_raw)
         #TakePhoto(cam, "test.jpg")
@@ -68,22 +81,42 @@ def TakePhoto(cam, key, filename):
 
     cam.delete("last")
 
+def StartVideo(cam):
+    #1080p @ 60fps
+    cam.video_settings("1080p", "60")
+
+    cam.shoot_video()
+
+
+def StopVideo(cam, key, filename):
+    #Stop video
+    cam.shutter(constants.stop)
+
+    UnlockFilestore(key)
+
+    cam.downloadLastMedia(custom_filename=f"{LUKS_MOUNT_POINT}/{filename}.mp4")
+    print("Downloaded Media")
+
+    LockFilestore()
+
+    cam.delete("last")
+    print("Deleted Media")
+
+
 def UnlockFilestore(password):
-    result = subprocess.run(['sudo', 'cryptsetup', 'luksOpen', ENCRYPTED_PARTITION, LUKS_MOUNT_NAME], input='LABERGE', encoding='ascii')
-    print(result.stdout)
+    subprocess.run(['sudo', 'cryptsetup', 'luksOpen', ENCRYPTED_PARTITION, LUKS_MOUNT_NAME], input='LABERGE', encoding='ascii')
 
-    result = subprocess.run(['sudo', 'mount', f'/dev/mapper/{LUKS_MOUNT_NAME}', LUKS_MOUNT_POINT])
-    print(result.stdout)
+    subprocess.run(['sudo', 'mount', f'/dev/mapper/{LUKS_MOUNT_NAME}', LUKS_MOUNT_POINT])
 
+    print("Unlocked Filestore")
 
 def LockFilestore():
 
-    result = subprocess.run(['sudo', 'umount', LUKS_MOUNT_POINT])
-    print(result.stdout)
+    subprocess.run(['sudo', 'umount', LUKS_MOUNT_POINT])
+    
+    subprocess.run(['sudo', 'cryptsetup', 'luksClose', f'/dev/mapper/{LUKS_MOUNT_NAME}'])
 
-    result = subprocess.run(['sudo', 'cryptsetup', 'luksClose', f'/dev/mapper/{LUKS_MOUNT_NAME}'])
-    print(result.stdout)
-
+    print("Locked Filestore")
 
 def RetrieveKey():
 
@@ -92,10 +125,12 @@ def RetrieveKey():
         f.close()
         
 
-    result = subprocess.run(['shred', '-n 100', '-u', KEY_FILE])
-    print(result.stdout)
+    subprocess.run(['shred', '-n 100', '-u', KEY_FILE])
+    print("Shredded Key")
     
     return key
+
+
 
 
 if __name__ == '__main__':
